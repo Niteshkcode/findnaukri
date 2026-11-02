@@ -1,0 +1,299 @@
+<?php
+/**
+ * FindNaukri.in - Employer Registration
+ */
+
+require_once 'includes/config.php';
+require_once 'includes/database.php';
+require_once 'includes/auth.php';
+require_once 'includes/functions.php';
+require_once 'includes/validation.php';
+require_once 'includes/csrf.php';
+require_once 'includes/otp.php';
+
+// Redirect if already logged in
+if (isLoggedIn()) {
+    redirect(SITE_URL . '/employer/dashboard.php');
+}
+
+$pageTitle = 'Employer Registration - FindNaukri.in';
+$errors = [];
+$success = false;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireCsrf();
+    
+    // Sanitize input
+    $data = sanitizeInput($_POST);
+    
+    // Validate
+    $validation = validateRegistration($data, ROLE_EMPLOYER);
+    if (!$validation['valid']) {
+        $errors = $validation['errors'];
+    } else {
+        // Map recruiter_name to full_name for database
+        $data['full_name'] = $data['recruiter_name'];
+
+        // Check if email already exists
+        $query = "SELECT id FROM users WHERE email = ? LIMIT 1";
+        $existing = fetchOne($query, [$data['email']]);
+        
+        if ($existing) {
+            $errors['email'] = 'This email is already registered';
+        } else {
+            // Hash password
+            $passwordHash = hashPassword($data['password']);
+            
+            // Insert user
+            $query = "INSERT INTO users (full_name, email, phone, password_hash, role, status) VALUES (?, ?, ?, ?, ?, ?)";
+            $params = [
+                $data['recruiter_name'],
+                $data['email'],
+                $data['phone'],
+                $passwordHash,
+                ROLE_EMPLOYER,
+                STATUS_PENDING
+            ];
+            
+            if (execute($query, $params)) {
+                $userId = lastInsertId();
+                
+                // Generate company slug
+                $companySlug = generateSlug($data['company_name']);
+                
+                // Ensure unique slug
+                $slugQuery = "SELECT id FROM employers WHERE company_slug = ? LIMIT 1";
+                $counter = 1;
+                while (fetchOne($slugQuery, [$companySlug])) {
+                    $companySlug = generateSlug($data['company_name']) . '-' . $counter;
+                    $counter++;
+                }
+                
+                // Create employer profile
+                $query = "INSERT INTO employers (user_id, company_name, company_slug, industry, website, description, city, state, verification_status) 
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                execute($query, [
+                    $userId,
+                    $data['company_name'],
+                    $companySlug,
+                    $data['industry'] ?? null,
+                    $data['website'] ?? null,
+                    $data['description'] ?? null,
+                    $data['city'] ?? null,
+                    $data['state'] ?? null,
+                    'pending'
+                ]);
+                
+                // Log registration
+                logAudit($userId, 'register', 'user', $userId);
+
+                // Create notification for admin
+                $adminQuery = "SELECT id FROM users WHERE role = ? AND status = ? LIMIT 1";
+                $admin = fetchOne($adminQuery, [ROLE_ADMIN, STATUS_ACTIVE]);
+
+                if ($admin) {
+                    createNotification($admin['id'], 'New Employer Registration',
+                        'A new employer has registered: ' . $data['company_name'], 'system', $userId);
+                }
+
+                // Send OTP verification email
+                $otpResult = sendOTPEmailToUser($userId, $data['email'], $data['recruiter_name'], 'registration');
+
+                if ($otpResult['success']) {
+                    $success = true;
+                    setFlash('success', 'Registration successful! A verification code has been sent to your email. Please verify your account to continue.');
+                    redirect(SITE_URL . '/verify-email.php?user_id=' . $userId . '&role=employer');
+                } else {
+                    // Email failed but registration succeeded
+                    $success = true;
+                    setFlash('warning', 'Registration successful! However, we could not send the verification email. Please request a new verification code.');
+                    redirect(SITE_URL . '/verify-email.php?user_id=' . $userId . '&role=employer');
+                }
+            } else {
+                $errors['general'] = 'Registration failed. Please try again.';
+            }
+        }
+    }
+}
+
+require_once 'includes/header.php';
+?>
+
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body p-4">
+                    <div class="text-center mb-4">
+                        <h2 class="card-title">Employer Registration</h2>
+                        <p class="text-muted">Register your company and start hiring talent</p>
+                    </div>
+                    
+                    <?php if ($success): ?>
+                        <div class="alert alert-success">
+                            <i class="fas fa-check-circle me-2"></i>
+                            Registration successful! Your account is pending verification. You will be notified once verified.
+                        </div>
+                        <div class="text-center mt-3">
+                            <a href="<?php echo SITE_URL; ?>/employer-login.php" class="btn btn-primary">Go to Login</a>
+                        </div>
+                    <?php else: ?>
+                        <?php if (!empty($errors['general'])): ?>
+                            <div class="alert alert-danger">
+                                <?php echo htmlspecialchars($errors['general']); ?>
+                            </div>
+                        <?php endif; ?>
+                        
+                        <form method="POST" action="" data-validate>
+                            <?php echo getCsrfField(); ?>
+                            
+                            <h5 class="mb-3">Company Information</h5>
+                            
+                            <div class="mb-3">
+                                <label for="company_name" class="form-label">Company Name *</label>
+                                <input type="text" class="form-control <?php echo isset($errors['company_name']) ? 'is-invalid' : ''; ?>" 
+                                       id="company_name" name="company_name" required
+                                       value="<?php echo htmlspecialchars($_POST['company_name'] ?? ''); ?>">
+                                <?php if (isset($errors['company_name'])): ?>
+                                    <div class="invalid-feedback"><?php echo htmlspecialchars($errors['company_name']); ?></div>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="industry" class="form-label">Industry *</label>
+                                <select class="form-select <?php echo isset($errors['industry']) ? 'is-invalid' : ''; ?>" 
+                                        id="industry" name="industry" required>
+                                    <option value="">Select Industry</option>
+                                    <option value="Information Technology" <?php echo (($_POST['industry'] ?? '') === 'Information Technology') ? 'selected' : ''; ?>>Information Technology</option>
+                                    <option value="Manufacturing" <?php echo (($_POST['industry'] ?? '') === 'Manufacturing') ? 'selected' : ''; ?>>Manufacturing</option>
+                                    <option value="Banking & Finance" <?php echo (($_POST['industry'] ?? '') === 'Banking & Finance') ? 'selected' : ''; ?>>Banking & Finance</option>
+                                    <option value="Healthcare" <?php echo (($_POST['industry'] ?? '') === 'Healthcare') ? 'selected' : ''; ?>>Healthcare</option>
+                                    <option value="Education" <?php echo (($_POST['industry'] ?? '') === 'Education') ? 'selected' : ''; ?>>Education</option>
+                                    <option value="Retail" <?php echo (($_POST['industry'] ?? '') === 'Retail') ? 'selected' : ''; ?>>Retail</option>
+                                    <option value="Consulting" <?php echo (($_POST['industry'] ?? '') === 'Consulting') ? 'selected' : ''; ?>>Consulting</option>
+                                    <option value="Other" <?php echo (($_POST['industry'] ?? '') === 'Other') ? 'selected' : ''; ?>>Other</option>
+                                </select>
+                                <?php if (isset($errors['industry'])): ?>
+                                    <div class="invalid-feedback"><?php echo htmlspecialchars($errors['industry']); ?></div>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="city" class="form-label">City *</label>
+                                    <input type="text" class="form-control" id="city" name="city" required
+                                           value="<?php echo htmlspecialchars($_POST['city'] ?? ''); ?>">
+                                </div>
+                                
+                                <div class="col-md-6 mb-3">
+                                    <label for="state" class="form-label">State *</label>
+                                    <input type="text" class="form-control" id="state" name="state" required
+                                           value="<?php echo htmlspecialchars($_POST['state'] ?? ''); ?>">
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="website" class="form-label">Company Website</label>
+                                <input type="url" class="form-control" id="website" name="website"
+                                       value="<?php echo htmlspecialchars($_POST['website'] ?? ''); ?>"
+                                       placeholder="https://example.com">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="description" class="form-label">Company Description</label>
+                                <textarea class="form-control" id="description" name="description" rows="3"
+                                          placeholder="Brief description of your company"><?php echo htmlspecialchars($_POST['description'] ?? ''); ?></textarea>
+                            </div>
+                            
+                            <hr class="my-4">
+                            
+                            <h5 class="mb-3">Recruiter Information</h5>
+                            
+                            <div class="mb-3">
+                                <label for="recruiter_name" class="form-label">Recruiter Name *</label>
+                                <input type="text" class="form-control <?php echo isset($errors['recruiter_name']) ? 'is-invalid' : ''; ?>"
+                                       id="recruiter_name" name="recruiter_name" required
+                                       value="<?php echo htmlspecialchars($_POST['recruiter_name'] ?? ''); ?>"
+                                       pattern="[a-zA-Z\s\-\'\.]{2,100}"
+                                       title="Name can contain letters, spaces, hyphens, and apostrophes">
+                                <?php if (isset($errors['recruiter_name'])): ?>
+                                    <div class="invalid-feedback"><?php echo htmlspecialchars($errors['recruiter_name']); ?></div>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="email" class="form-label">Official Email *</label>
+                                    <input type="email" class="form-control <?php echo isset($errors['email']) ? 'is-invalid' : ''; ?>" 
+                                           id="email" name="email" required
+                                           value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>">
+                                    <?php if (isset($errors['email'])): ?>
+                                        <div class="invalid-feedback"><?php echo htmlspecialchars($errors['email']); ?></div>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <div class="col-md-6 mb-3">
+                                    <label for="phone" class="form-label">Mobile Number *</label>
+                                    <input type="tel" class="form-control <?php echo isset($errors['phone']) ? 'is-invalid' : ''; ?>" 
+                                           id="phone" name="phone" required
+                                           value="<?php echo htmlspecialchars($_POST['phone'] ?? ''); ?>"
+                                           placeholder="10-digit mobile number">
+                                    <?php if (isset($errors['phone'])): ?>
+                                        <div class="invalid-feedback"><?php echo htmlspecialchars($errors['phone']); ?></div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="password" class="form-label">Password *</label>
+                                    <div class="password-input-wrapper" style="position: relative;">
+                                        <input type="password" class="form-control <?php echo isset($errors['password']) ? 'is-invalid' : ''; ?>"
+                                               id="password" name="password" required
+                                               minlength="8">
+                                    </div>
+                                    <?php if (isset($errors['password'])): ?>
+                                        <div class="invalid-feedback"><?php echo htmlspecialchars($errors['password']); ?></div>
+                                    <?php endif; ?>
+                                    <small class="text-muted">Min 8 characters, with uppercase, lowercase, number, and special character</small>
+                                </div>
+
+                                <div class="col-md-6 mb-3">
+                                    <label for="confirm_password" class="form-label">Confirm Password *</label>
+                                    <div class="password-input-wrapper" style="position: relative;">
+                                        <input type="password" class="form-control <?php echo isset($errors['confirm_password']) ? 'is-invalid' : ''; ?>"
+                                               id="confirm_password" name="confirm_password" required
+                                               minlength="8">
+                                    </div>
+                                    <?php if (isset($errors['confirm_password'])): ?>
+                                        <div class="invalid-feedback"><?php echo htmlspecialchars($errors['confirm_password']); ?></div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="terms" name="terms" required>
+                                    <label class="form-check-label" for="terms">
+                                        I agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="d-grid">
+                                <button type="submit" class="btn btn-primary btn-lg">Register Company</button>
+                            </div>
+                        </form>
+                        
+                        <div class="text-center mt-4">
+                            <p class="mb-0">Already have an account? <a href="<?php echo SITE_URL; ?>/employer-login.php">Login here</a></p>
+                            <p class="mt-2">Are you a job seeker? <a href="<?php echo SITE_URL; ?>/candidate-register.php">Register as Candidate</a></p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php require_once 'includes/footer.php'; ?>

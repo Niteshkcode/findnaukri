@@ -1,0 +1,51 @@
+# FindNaukri.in - Apache Configuration
+# Security and URL rewriting
+
+# Prevent directory listing
+Options -Indexes
+
+# Protect sensitive files
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "(config\.php|database\.php|\.env|\.env\.local)">
+    Require all denied
+</FilesMatch>
+
+# Protect upload directories from script execution
+<FilesMatch "uploads/.*\.(php|phtml|php3|php4|php5|phps|cgi|pl|py|jsp|asp|sh|cgi)$">
+    Require all denied
+</FilesMatch>
+
+# Enable compression
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript application/json
+</IfModule>
+
+# Set expires headers for caching
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType image/jpeg "access plus 1 year"
+    ExpiresByType image/png "access plus 1 year"
+    ExpiresByType image/gif "access plus 1 year"
+    ExpiresByType text/css "access plus 1 month"
+    ExpiresByType application/javascript "access plus 1 month"
+</IfModule>
+
+# Security headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# PHP settings (if applicable)
+<IfModule mod_php.c>
+    php_flag display_errors Off
+    php_value error_log /tmp/php_errors.log
+</IfModule>
+
+# Default Directory Index
+DirectoryIndex index.php index.html

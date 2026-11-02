@@ -1,0 +1,117 @@
+<?php
+/**
+ * FindNaukri.in - Candidate Login
+ */
+
+require_once 'includes/config.php';
+require_once 'includes/database.php';
+require_once 'includes/auth.php';
+require_once 'includes/functions.php';
+require_once 'includes/validation.php';
+require_once 'includes/csrf.php';
+
+// Redirect if already logged in
+if (isLoggedIn() && isCandidate()) {
+    redirect(SITE_URL . '/candidate/dashboard.php');
+}
+
+$pageTitle = 'Candidate Login - FindNaukri.in';
+$error = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireCsrf();
+    
+    $email = sanitize($_POST['email'] ?? '');
+    $password = $_POST['password'] ?? '';
+    
+    $result = loginUser($email, $password, ROLE_CANDIDATE);
+    
+    if ($result['success']) {
+        // Check for redirect URL
+        $redirect = $_SESSION['redirect_after_login'] ?? SITE_URL . '/candidate/dashboard.php';
+        unset($_SESSION['redirect_after_login']);
+
+        redirect($redirect);
+    } else {
+        $error = $result['message'];
+
+        // If error is about email verification, add resend link
+        if (strpos($error, 'verify your email') !== false) {
+            // Get user ID for resend link
+            $query = "SELECT id FROM users WHERE email = ? AND role = ? LIMIT 1";
+            $user = fetchOne($query, [$email, ROLE_CANDIDATE]);
+            if ($user) {
+                $error .= ' <a href="' . SITE_URL . '/resend-verification.php?user_id=' . $user['id'] . '&role=candidate" style="color: #F58220;">Resend verification email</a>';
+            }
+        }
+    }
+}
+
+require_once 'includes/header.php';
+?>
+
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-body p-4">
+                    <div class="text-center mb-4">
+                        <h2 class="card-title">Candidate Login</h2>
+                        <p class="text-muted">Welcome back! Login to access your dashboard</p>
+                    </div>
+                    
+                    <?php if ($error): ?>
+                        <div class="alert alert-danger">
+                            <i class="fas fa-exclamation-circle me-2"></i>
+                            <?php echo htmlspecialchars($error); ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <?php if (isset($_GET['timeout'])): ?>
+                        <div class="alert alert-warning">
+                            <i class="fas fa-clock me-2"></i>
+                            Your session has expired. Please login again.
+                        </div>
+                    <?php endif; ?>
+                    
+                    <form method="POST" action="" data-validate>
+                        <?php echo getCsrfField(); ?>
+                        
+                        <div class="mb-3">
+                            <label for="email" class="form-label">Email Address</label>
+                            <input type="email" class="form-control" id="email" name="email" required
+                                   value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="password" class="form-label">Password</label>
+                            <div class="password-input-wrapper" style="position: relative;">
+                                <input type="password" class="form-control" id="password" name="password" required>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="remember" name="remember">
+                            <label class="form-check-label" for="remember">Remember me</label>
+                        </div>
+                        
+                        <div class="d-grid mb-3">
+                            <button type="submit" class="btn btn-primary btn-lg">Login</button>
+                        </div>
+                        
+                        <div class="text-center mb-3">
+                            <a href="<?php echo SITE_URL; ?>/forgot-password.php?role=candidate">Forgot Password?</a>
+                        </div>
+                    </form>
+                    
+                    <div class="text-center">
+                        <p class="mb-0">Don't have an account? <a href="<?php echo SITE_URL; ?>/candidate-register.php">Register here</a></p>
+                        <p class="mt-2">Are you an employer? <a href="<?php echo SITE_URL; ?>/employer-login.php">Employer Login</a></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php require_once 'includes/footer.php'; ?>
